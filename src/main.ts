@@ -13,6 +13,7 @@ import {
   Setting,
   normalizePath,
   requestUrl,
+  setIcon,
 } from 'obsidian'
 
 interface MnemoSettings {
@@ -219,7 +220,7 @@ export default class MnemoPlugin extends Plugin {
     this.recorder?.stop()
     this.releaseMic()
     this.clearTimer()
-    this.statusEl?.setText('🎙 Transcribing…')
+    this.setStatus('loader', 'Transcribing…')
   }
 
   private newRecorder() {
@@ -308,7 +309,7 @@ export default class MnemoPlugin extends Plugin {
         const editor = this.liveEditor
         if (!editor || !this.livePos) return
         const audioLink = wantAudio ? await this.saveAudioFile(audio, label) : ''
-        this.statusEl?.setText('🎙 Summarising…')
+        this.setStatus('sparkles', 'Summarising…')
         const block = await this.format(this.liveText)
         // Replace the live skeleton block (start .. closing fence) with the final one
         const from = editor.offsetToPos(this.liveBlockStart)
@@ -327,7 +328,7 @@ export default class MnemoPlugin extends Plugin {
 
       const audioLink = wantAudio ? await this.saveAudioFile(audio, label) : ''
       const raw = await this.transcribe(audio, `recording.${this.ext}`, blob.type)
-      this.statusEl?.setText('🎙 Summarising…')
+      this.setStatus('sparkles', 'Summarising…')
       this.insert(buildBlock(await this.format(raw)), audioLink)
       new Notice('Mnemo: transcript added.')
     } catch (err: any) {
@@ -446,7 +447,17 @@ export default class MnemoPlugin extends Plugin {
   private updateStatus() {
     const s = Math.floor((Date.now() - this.startedAt) / 1000)
     const live = this.liveEditor ? ' live' : ''
-    this.statusEl?.setText(`🔴${live} ${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`)
+    this.setStatus('mic', `${live ? 'Live ' : ''}${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`, true)
+  }
+
+  // Status bar: Obsidian icon + text (no emoji)
+  private setStatus(icon: string, text: string, recording = false) {
+    if (!this.statusEl) return
+    this.statusEl.empty()
+    this.statusEl.addClass('mnemo-status')
+    this.statusEl.toggleClass('mnemo-status-recording', recording)
+    setIcon(this.statusEl.createSpan({ cls: 'mnemo-status-icon' }), icon)
+    this.statusEl.createSpan({ text })
   }
 
   private releaseMic() {

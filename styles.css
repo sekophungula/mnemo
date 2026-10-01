@@ -39,3 +39,20 @@
   max-height: 480px;
   overflow-y: auto;
 }
+
+.mnemo-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mnemo-status-icon {
+  display: inline-flex;
+}
+.mnemo-status-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.mnemo-status-recording .mnemo-status-icon {
+  color: var(--color-red);
+  animation: mnemo-pulse 1.2s ease-in-out infinite;
+}

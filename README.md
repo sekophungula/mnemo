@@ -2,12 +2,12 @@
 
 Record your voice (or a lesson, lecture, meeting) inside Obsidian and get a clean transcript **and** an AI summary dropped straight into your note — like Notion's AI transcription, but in your own vault.
 
-- 🎙 **One-click recording** from the ribbon, command palette or a hotkey
-- ⚡ **Live mode** — text appears in your note while you speak
-- 🗂 **Tabbed result block** — *Transcript* and *Summary* tabs with a copy button
-- 🧮 **Maths & science notation** — spoken formulas become LaTeX (e.g. "x squared plus two x" → $x^2 + 2x$)
-- 🌍 **Mixed languages** — handles speakers who switch languages mid-sentence (e.g. English ↔ isiZulu) without translating
-- 🔊 **Saves & labels audio** — recordings are stored in your vault with a name you choose
+- **One-click recording** from the ribbon, command palette or a hotkey
+- **Live mode** — text appears in your note while you speak
+- **Tabbed result block** — *Transcript* and *Summary* tabs with a copy button
+- **Maths & science notation** — spoken formulas become LaTeX (e.g. "x squared plus two x" → $x^2 + 2x$)
+- **Mixed languages** — handles speakers who switch languages mid-sentence (e.g. English ↔ isiZulu) without translating
+- **Saves & labels audio** — recordings are stored in your vault with a name you choose
 
 Uses your own OpenAI API key. Nothing goes through a third-party server — audio is sent directly from Obsidian to OpenAI.
 
@@ -80,7 +80,7 @@ The first time you record, your OS will ask for microphone permission for Obsidi
 ## Usage
 
 1. Put your cursor in a note where the transcript should go.
-2. Click the 🎙 **microphone icon** in the left ribbon. It pulses red and a timer appears in the status bar.
+2. Click the **microphone icon** in the left ribbon. It pulses red and a timer appears in the status bar.
 3. Click it again to stop. Enter a label for the recording (e.g. *Physics — Newton's laws*).
 4. A block appears with the audio player above it and **Transcript / Summary** tabs.
 
