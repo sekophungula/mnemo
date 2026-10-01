@@ -1,0 +1,9 @@
+{
+  "id": "mnemo",
+  "name": "Mnemo Voice Transcriber",
+  "version": "0.2.0",
+  "minAppVersion": "1.4.0",
+  "description": "Record your voice and insert a Whisper transcript into the current note.",
+  "author": "Siseko Phungula",
+  "isDesktopOnly": false
+}

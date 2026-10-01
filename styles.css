@@ -1,0 +1,41 @@
+.side-dock-ribbon-action.mnemo-recording {
+  color: var(--color-red);
+  animation: mnemo-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mnemo-pulse {
+  50% { opacity: 0.4; }
+}
+
+.mnemo-block {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  overflow: hidden;
+}
+.mnemo-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 4px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.mnemo-tabs button {
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-s) var(--radius-s) 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.mnemo-tabs button.is-active {
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-weight: 600;
+}
+.mnemo-tabs .mnemo-copy {
+  margin-left: auto;
+}
+.mnemo-pane {
+  padding: 8px 16px;
+  background: var(--background-primary);
+  max-height: 480px;
+  overflow-y: auto;
+}
