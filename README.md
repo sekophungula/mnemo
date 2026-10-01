@@ -27,14 +27,14 @@ Mnemo isn't in the Obsidian Community Plugins store, so you install it manually.
 
 ### Option A — Download a release (no coding)
 
-1. Go to the [Releases page](https://github.com/sekophungula/mnemo/releases) and download `main.js`, `manifest.json` and `styles.css` from the latest release.
+1. Go to the [Releases page](https://github.com/sekophungula/mnemo-obsidian/releases) and download `main.js`, `manifest.json` and `styles.css` from the latest release.
 2. Continue at [Copy the plugin into your vault](#copy-the-plugin-into-your-vault).
 
 ### Option B — Build from source
 
 ```bash
-git clone https://github.com/sekophungula/mnemo.git
-cd mnemo
+git clone https://github.com/sekophungula/mnemo-obsidian.git
+cd mnemo-obsidian
 npm install
 npm run build
 ```
