@@ -56,3 +56,17 @@
   color: var(--color-red);
   animation: mnemo-pulse 1.2s ease-in-out infinite;
 }
+
+.mnemo-audio {
+  width: 100%;
+  margin: 8px 0 4px;
+}
+.mnemo-audio-name {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.mnemo-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}

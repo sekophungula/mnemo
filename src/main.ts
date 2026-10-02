@@ -11,6 +11,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TFile,
   normalizePath,
   requestUrl,
   setIcon,
@@ -27,6 +28,7 @@ interface MnemoSettings {
   chatModel: string
   liveMode: boolean
   liveChunkSeconds: number
+  transcribeDrops: boolean
 }
 
 const DEFAULT_SETTINGS: MnemoSettings = {
@@ -40,47 +42,135 @@ const DEFAULT_SETTINGS: MnemoSettings = {
   chatModel: 'gpt-4o-mini',
   liveMode: false,
   liveChunkSeconds: 10,
+  transcribeDrops: true,
 }
 
-// OpenAI Whisper accepts files up to 25 MB
+// OpenAI transcription accepts files up to 25 MB; bigger or unsupported files are split into WAV pieces
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
+const SEGMENT_SECONDS = 600
+const OPENAI_EXTS = new Set(['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm'])
+const AUDIO_EXTS = new Set([...OPENAI_EXTS, 'aac', 'caf', 'opus', 'qta', 'aiff', 'aif', 'mov'])
 
 const FENCE = '```'
+const AUDIO_MARK = '--- audio'
 const TRANSCRIPT_MARK = '--- transcript'
 const SUMMARY_MARK = '--- summary'
 
-const FORMAT_PROMPT = `You turn raw speech-to-text transcripts into study notes for Obsidian.
-Return JSON: {"transcript": string, "summary": string}.
-- "transcript": the full transcript, faithfully, with punctuation and paragraphs fixed. Do not drop content.
-- "summary": a concise Markdown summary (headings/bullets, key definitions, worked steps).
+const LANGUAGE_RULES = `- The speaker may switch between languages (e.g. English and isiZulu), even mid-sentence.
+- Never use triple backticks.`
+
+const FORMAT_PROMPT = `You tidy raw speech-to-text transcripts for Obsidian notes.
+Return JSON: {"transcript": string}.
+- Keep the full transcript faithfully, with punctuation and paragraphs fixed. Do not drop content.
 - If the content involves maths, physics, chemistry or other science, write every spoken formula, equation,
   unit, symbol or chemical formula as LaTeX: inline $...$ and display $$...$$ (on their own lines). E.g.
   "x squared plus two x" -> $x^2 + 2x$, "integral from zero to one of f of x dx" -> $\\int_0^1 f(x)\\,dx$.
-- The speaker may switch between languages (e.g. English and isiZulu), even mid-sentence. Keep every passage
-  in the language it was spoken — never translate the transcript. Fix obvious mis-hearings using the correct
-  spelling in that language.
+- Keep every passage in the language it was spoken — never translate. Fix obvious mis-hearings using the
+  correct spelling in that language.
+${LANGUAGE_RULES}`
+
+const SUMMARY_PROMPT = `You write study-note summaries of lesson or meeting transcripts for Obsidian.
+Return JSON: {"summary": string} — concise Markdown (headings/bullets, key definitions, worked steps).
+- Write maths and science notation as LaTeX: inline $...$ and display $$...$$.
 - Write the summary in English, keeping important non-English terms in the original with a short gloss,
   e.g. "isenzo (verb)".
-- Never use triple backticks.`
+${LANGUAGE_RULES}`
 
 interface MnemoBlock {
+  audio: string
   transcript: string
   summary: string
 }
 
+function blockBody(b: MnemoBlock) {
+  const audio = b.audio ? `${AUDIO_MARK}\n${b.audio}\n` : ''
+  return `${audio}${TRANSCRIPT_MARK}\n${b.transcript.trim()}\n${SUMMARY_MARK}\n${b.summary.trim()}\n`
+}
+
 function buildBlock(b: MnemoBlock) {
-  return `${FENCE}mnemo\n${TRANSCRIPT_MARK}\n${b.transcript.trim()}\n${SUMMARY_MARK}\n${b.summary.trim()}\n${FENCE}\n`
+  return `${FENCE}mnemo\n${blockBody(b)}${FENCE}\n`
 }
 
 function parseBlock(source: string): MnemoBlock {
-  const t = source.indexOf(TRANSCRIPT_MARK)
-  const m = source.indexOf(SUMMARY_MARK)
-  if (t === -1) return { transcript: source.trim(), summary: '' }
-  const end = m === -1 ? source.length : m
-  return {
-    transcript: source.slice(t + TRANSCRIPT_MARK.length, end).trim(),
-    summary: m === -1 ? '' : source.slice(m + SUMMARY_MARK.length).trim(),
+  const out: MnemoBlock = { audio: '', transcript: '', summary: '' }
+  if (!source.includes(TRANSCRIPT_MARK)) return { ...out, transcript: source.trim() }
+  const marks: Record<string, keyof MnemoBlock> = {
+    [AUDIO_MARK]: 'audio',
+    [TRANSCRIPT_MARK]: 'transcript',
+    [SUMMARY_MARK]: 'summary',
   }
+  let key: keyof MnemoBlock | null = null
+  for (const line of source.split('\n')) {
+    const mark = marks[line.trim()]
+    if (mark) key = mark
+    else if (key) out[key] += line + '\n'
+  }
+  return { audio: out.audio.trim(), transcript: out.transcript.trim(), summary: out.summary.trim() }
+}
+
+// Model output goes inside a code fence, so it can't contain one
+function noFences(t: unknown) {
+  return String(t ?? '').replace(/```/g, "'".repeat(3))
+}
+
+function extOf(name: string) {
+  return name.split('.').pop()?.toLowerCase() ?? ''
+}
+
+function isAudioFile(f: File) {
+  return f.type.startsWith('audio/') || AUDIO_EXTS.has(extOf(f.name))
+}
+
+// Decode any audio the app can play, downmix to 16 kHz mono, and cut it into WAV pieces under 25 MB
+async function splitToWav(audio: ArrayBuffer, seconds = SEGMENT_SECONDS): Promise<ArrayBuffer[]> {
+  const ctx = new AudioContext({ sampleRate: 16000 })
+  let buf: AudioBuffer
+  try {
+    buf = await ctx.decodeAudioData(audio.slice(0))
+  } catch {
+    throw new Error('Could not read this audio format. Try exporting it as .m4a or .mp3.')
+  } finally {
+    ctx.close()
+  }
+  const mono = new Float32Array(buf.length)
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const data = buf.getChannelData(c)
+    for (let i = 0; i < data.length; i++) mono[i] += data[i] / buf.numberOfChannels
+  }
+  const step = seconds * buf.sampleRate
+  const out: ArrayBuffer[] = []
+  for (let i = 0; i < mono.length; i += step) out.push(encodeWav(mono.subarray(i, i + step), buf.sampleRate))
+  return out
+}
+
+function encodeWav(samples: Float32Array, rate: number): ArrayBuffer {
+  const view = new DataView(new ArrayBuffer(44 + samples.length * 2))
+  const str = (o: number, t: string) => [...t].forEach((ch, i) => view.setUint8(o + i, ch.charCodeAt(0)))
+  str(0, 'RIFF')
+  view.setUint32(4, 36 + samples.length * 2, true)
+  str(8, 'WAVEfmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, rate, true)
+  view.setUint32(28, rate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  str(36, 'data')
+  view.setUint32(40, samples.length * 2, true)
+  for (let i = 0; i < samples.length; i++) {
+    const v = Math.max(-1, Math.min(1, samples[i]))
+    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true)
+  }
+  return view.buffer
+}
+
+interface AudioSource {
+  name: string
+  type: string
+  load: () => Promise<ArrayBuffer>
+  // Already in the vault: link it instead of saving a copy
+  vaultPath?: string
 }
 
 export default class MnemoPlugin extends Plugin {
@@ -123,6 +213,50 @@ export default class MnemoPlugin extends Plugin {
       callback: () => this.toggle(true),
     })
 
+    this.addCommand({
+      id: 'transcribe-file',
+      name: 'Transcribe audio file…',
+      icon: 'file-audio',
+      editorCallback: editor => this.pickFiles(editor),
+    })
+
+    // Drop audio (e.g. from Voice Memos or Finder) onto a note to transcribe it there
+    this.registerEvent(
+      this.app.workspace.on('editor-drop', (evt, editor) => {
+        if (!this.settings.transcribeDrops || evt.defaultPrevented) return
+        const files = Array.from(evt.dataTransfer?.files ?? []).filter(isAudioFile)
+        if (!files.length) return
+        evt.preventDefault()
+        // CodeMirror knows where the pointer is; fall back to the cursor
+        const at = (editor as any).cm?.posAtCoords?.({ x: evt.clientX, y: evt.clientY })
+        this.transcribeInto(editor, files.map(fileSource), typeof at === 'number' ? at : undefined)
+      }),
+    )
+
+    // Right-click an audio file already in the vault
+    this.registerEvent(
+      this.app.workspace.on('file-menu', (menu, file) => {
+        if (!(file instanceof TFile) || !AUDIO_EXTS.has(file.extension)) return
+        menu.addItem(item =>
+          item
+            .setTitle('Transcribe with Mnemo')
+            .setIcon('mic')
+            .onClick(() => {
+              const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor
+              if (!editor) return new Notice('Mnemo: open the note the transcript should go in first.')
+              this.transcribeInto(editor, [
+                {
+                  name: file.name,
+                  type: `audio/${file.extension}`,
+                  load: () => this.app.vault.readBinary(file),
+                  vaultPath: file.path,
+                },
+              ])
+            }),
+        )
+      }),
+    )
+
     this.registerMarkdownCodeBlockProcessor('mnemo', (src, el, ctx) => this.renderBlock(src, el, ctx))
 
     this.addSettingTab(new MnemoSettingTab(this.app, this))
@@ -135,30 +269,170 @@ export default class MnemoPlugin extends Plugin {
 
     const root = el.createDiv({ cls: 'mnemo-block' })
     const bar = root.createDiv({ cls: 'mnemo-tabs' })
-    const panes: HTMLElement[] = []
     const tabs: HTMLElement[] = []
-    const entries: [string, string][] = [
-      ['Transcript', block.transcript],
-      ['Summary', block.summary || (this.recorder ? '_Summary appears when recording stops…_' : '_No summary._')],
-    ]
-    entries.forEach(([name, md], i) => {
+    const panes: HTMLElement[] = []
+    const copyText = [block.transcript, block.audio, block.summary]
+    const addTab = (name: string) => {
+      const i = tabs.length
       const tab = bar.createEl('button', { text: name, cls: 'mnemo-tab' })
       const pane = root.createDiv({ cls: 'mnemo-pane markdown-rendered' })
-      MarkdownRenderer.render(this.app, md, pane, ctx.sourcePath, child)
       tab.onclick = () => {
         tabs.forEach((t, j) => t.toggleClass('is-active', i === j))
         panes.forEach((p, j) => p.toggle(i === j))
       }
       tabs.push(tab)
       panes.push(pane)
-    })
+      return pane
+    }
+
+    MarkdownRenderer.render(this.app, block.transcript, addTab('Transcript'), ctx.sourcePath, child)
+
+    const audioPane = addTab('Audio')
+    const audioFile = block.audio ? this.app.vault.getAbstractFileByPath(block.audio) : null
+    if (audioFile instanceof TFile) {
+      audioPane.createEl('audio', {
+        cls: 'mnemo-audio',
+        attr: { controls: '', preload: 'metadata', src: this.app.vault.getResourcePath(audioFile) },
+      })
+      const link = audioPane.createEl('a', { text: audioFile.name, cls: 'mnemo-audio-name' })
+      link.onclick = () => this.app.workspace.getLeaf('tab').openFile(audioFile)
+    } else {
+      audioPane.createEl('p', {
+        text: block.audio ? `Audio file not found: ${block.audio}` : 'No audio saved with this transcript.',
+        cls: 'mnemo-empty',
+      })
+    }
+
+    const summaryPane = addTab('Summary')
+    if (block.summary) {
+      MarkdownRenderer.render(this.app, block.summary, summaryPane, ctx.sourcePath, child)
+    } else if (this.recorder || !block.transcript || block.transcript.startsWith('_Transcribing ')) {
+      summaryPane.createEl('p', { text: 'You can summarise once transcription finishes.', cls: 'mnemo-empty' })
+    } else {
+      // Only spend the user's credits when they ask for a summary
+      summaryPane.createEl('p', { text: 'No summary yet.', cls: 'mnemo-empty' })
+      const btn = summaryPane.createEl('button', { text: 'Generate summary', cls: 'mod-cta' })
+      btn.onclick = async () => {
+        btn.disabled = true
+        btn.setText('Summarising…')
+        try {
+          const summary = await this.summarise(block.transcript)
+          await this.updateBlock(ctx, el, source, { ...block, summary })
+        } catch (err: any) {
+          new Notice(`Mnemo: summary failed (${err?.message ?? 'error'}).`, 8000)
+          btn.disabled = false
+          btn.setText('Generate summary')
+        }
+      }
+    }
+
     const copy = bar.createEl('button', { text: 'Copy', cls: 'mnemo-copy' })
     copy.onclick = () => {
       const active = tabs.findIndex(t => t.hasClass('is-active'))
-      navigator.clipboard.writeText(entries[active][1])
+      navigator.clipboard.writeText(copyText[active])
       new Notice('Copied')
     }
     tabs[0].click()
+  }
+
+  // Rewrite this block's contents in the note
+  private async updateBlock(ctx: MarkdownPostProcessorContext, el: HTMLElement, source: string, b: MnemoBlock) {
+    const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath)
+    if (!(file instanceof TFile)) throw new Error('note not found')
+    const info = ctx.getSectionInfo(el)
+    const body = blockBody(b).trimEnd()
+    await this.app.vault.process(file, data => {
+      const lines = data.split('\n')
+      if (info && lines[info.lineStart]?.startsWith(FENCE + 'mnemo') && lines[info.lineEnd]?.startsWith(FENCE)) {
+        lines.splice(info.lineStart + 1, info.lineEnd - info.lineStart - 1, ...body.split('\n'))
+        return lines.join('\n')
+      }
+      const at = data.indexOf(source.trim())
+      if (at === -1) throw new Error('block changed — try again')
+      return data.slice(0, at) + body + data.slice(at + source.trim().length)
+    })
+  }
+
+  // ---- Audio files (drop, picker, vault) ----
+
+  private pickFiles(editor: Editor) {
+    const input = document.body.createEl('input', {
+      attr: { type: 'file', multiple: '', accept: 'audio/*,' + [...AUDIO_EXTS].map(e => '.' + e).join(',') },
+    })
+    input.style.display = 'none'
+    input.onchange = () => {
+      const files = Array.from(input.files ?? []).filter(isAudioFile)
+      input.remove()
+      if (files.length) this.transcribeInto(editor, files.map(fileSource))
+    }
+    input.click()
+  }
+
+  private async transcribeInto(editor: Editor, sources: AudioSource[], offset?: number) {
+    if (!this.settings.apiKey) {
+      new Notice('Mnemo: add your OpenAI API key in Settings → Mnemo Voice Transcriber.')
+      return
+    }
+    // Put placeholders on their own lines at the drop point, then fill each one in turn
+    const pos = editor.offsetToPos(offset ?? editor.posToOffset(editor.getCursor()))
+    const lineText = editor.getLine(pos.line)
+    const id = Date.now().toString(36)
+    const placeholders = sources.map(
+      (src, i) => `${FENCE}mnemo\n${TRANSCRIPT_MARK}\n_Transcribing ${src.name}… (${id}-${i})_\n${FENCE}\n`,
+    )
+    editor.replaceRange((lineText.trim() ? '\n' : '') + placeholders.join(''), { line: pos.line, ch: lineText.length })
+
+    for (const [i, src] of sources.entries()) {
+      let result = ''
+      try {
+        const audio = await src.load()
+        const ext = extOf(src.name)
+        let path = src.vaultPath ?? ''
+        if (!path && this.settings.saveAudio) {
+          const name = src.name.replace(/\.[^.]+$/, '')
+          const label = this.settings.askForLabel ? await new LabelModal(this.app, name).ask() : name
+          path = await this.saveAudioFile(audio, label, ext)
+        }
+        const raw = await this.transcribeAudio(audio, ext, src.type || `audio/${ext}`)
+        this.progress('sparkles', 'Tidying…')
+        result = buildBlock({ audio: path, transcript: await this.format(raw), summary: '' })
+        new Notice(`Mnemo: ${src.name} transcribed.`)
+      } catch (err: any) {
+        new Notice(`Mnemo: ${src.name} — ${err?.message ?? 'transcription failed'}`, 8000)
+        console.error('Mnemo file transcription error', err)
+      }
+      const at = editor.getValue().indexOf(placeholders[i])
+      if (at !== -1) {
+        editor.replaceRange(result, editor.offsetToPos(at), editor.offsetToPos(at + placeholders[i].length))
+      } else if (result) {
+        editor.replaceSelection(result)
+      }
+    }
+    this.progress('', '')
+  }
+
+  // Send as-is when OpenAI accepts it, otherwise split into WAV pieces and join the text
+  private async transcribeAudio(audio: ArrayBuffer, ext: string, type: string): Promise<string> {
+    if (audio.byteLength <= MAX_FILE_SIZE_BYTES && OPENAI_EXTS.has(ext)) {
+      this.progress('loader', 'Transcribing…')
+      return this.transcribe(audio, `audio.${ext}`, type)
+    }
+    this.progress('loader', 'Preparing audio…')
+    const pieces = await splitToWav(audio)
+    let text = ''
+    for (const [i, piece] of pieces.entries()) {
+      this.progress('loader', `Transcribing ${i + 1}/${pieces.length}…`)
+      const t = await this.transcribe(piece, 'audio.wav', 'audio/wav', text)
+      text += (text && t ? ' ' : '') + t
+    }
+    return text
+  }
+
+  // Status text that never overwrites an active recording's timer
+  private progress(icon: string, text: string) {
+    if (this.recorder?.state === 'recording') return
+    if (text) this.setStatus(icon, text)
+    else this.statusEl?.setText('')
   }
 
   onunload() {
@@ -303,33 +577,26 @@ export default class MnemoPlugin extends Plugin {
       const audio = await blob.arrayBuffer()
       const wantAudio = this.settings.saveAudio
       const label = wantAudio && this.settings.askForLabel ? await new LabelModal(this.app).ask() : null
+      const path = wantAudio ? await this.saveAudioFile(audio, label, this.ext) : ''
 
       if (live) {
         await this.liveQueue
         const editor = this.liveEditor
         if (!editor || !this.livePos) return
-        const audioLink = wantAudio ? await this.saveAudioFile(audio, label) : ''
-        this.setStatus('sparkles', 'Summarising…')
-        const block = await this.format(this.liveText)
+        this.setStatus('sparkles', 'Tidying…')
+        const transcript = await this.format(this.liveText)
         // Replace the live skeleton block (start .. closing fence) with the final one
         const from = editor.offsetToPos(this.liveBlockStart)
         const closeIdx = editor.getValue().indexOf(`\n${FENCE}`, editor.posToOffset(this.livePos))
         const to = editor.offsetToPos(closeIdx + FENCE.length + 2)
-        editor.replaceRange((audioLink ? audioLink + '\n' : '') + buildBlock(block), from, to)
+        editor.replaceRange(buildBlock({ audio: path, transcript, summary: '' }), from, to)
         new Notice('Mnemo: live transcription finished.')
         return
       }
 
-      if (blob.size > MAX_FILE_SIZE_BYTES) {
-        throw new Error(
-          `Recording is ${(blob.size / 1024 / 1024).toFixed(1)} MB; Whisper's limit is 25 MB. Try live mode for long sessions.`,
-        )
-      }
-
-      const audioLink = wantAudio ? await this.saveAudioFile(audio, label) : ''
-      const raw = await this.transcribe(audio, `recording.${this.ext}`, blob.type)
-      this.setStatus('sparkles', 'Summarising…')
-      this.insert(buildBlock(await this.format(raw)), audioLink)
+      const raw = await this.transcribeAudio(audio, this.ext, blob.type)
+      this.setStatus('sparkles', 'Tidying…')
+      this.insert(buildBlock({ audio: path, transcript: await this.format(raw), summary: '' }))
       new Notice('Mnemo: transcript added.')
     } catch (err: any) {
       new Notice(`Mnemo: ${err?.message ?? 'transcription failed'}`, 8000)
@@ -385,7 +652,7 @@ export default class MnemoPlugin extends Plugin {
     return (res.json.text as string).trim()
   }
 
-  private async saveAudioFile(audio: ArrayBuffer, label: string | null): Promise<string> {
+  private async saveAudioFile(audio: ArrayBuffer, label: string | null, ext: string): Promise<string> {
     const folder = normalizePath(this.settings.audioFolder || 'x/Recordings')
     if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder)
 
@@ -393,46 +660,54 @@ export default class MnemoPlugin extends Plugin {
     const clean = (label ?? '').replace(/[\\/:*?"<>|#^[\]]/g, '').trim()
     const base = clean ? `${stamp} ${clean}` : `${stamp} Recording`
 
-    let path = normalizePath(`${folder}/${base}.${this.ext}`)
+    let path = normalizePath(`${folder}/${base}.${ext}`)
     for (let i = 2; this.app.vault.getAbstractFileByPath(path); i++) {
-      path = normalizePath(`${folder}/${base} ${i}.${this.ext}`)
+      path = normalizePath(`${folder}/${base} ${i}.${ext}`)
     }
     await this.app.vault.createBinary(path, audio)
-    return `![[${path}]]`
+    return path
   }
 
-  // Clean up the transcript, add LaTeX for maths/science, and write a summary
-  private async format(raw: string): Promise<MnemoBlock> {
-    if (!raw.trim()) return { transcript: '', summary: '' }
-    if (!this.settings.formatWithAi) return { transcript: raw, summary: '' }
+  private async chat(system: string, user: string): Promise<any> {
+    const res = await requestUrl({
+      url: 'https://api.openai.com/v1/chat/completions',
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.settings.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.settings.chatModel || 'gpt-4o-mini',
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+      }),
+      throw: false,
+    })
+    if (res.status >= 400) throw new Error(res.json?.error?.message ?? `HTTP ${res.status}`)
+    return JSON.parse(res.json.choices[0].message.content)
+  }
+
+  // Clean up the transcript and add LaTeX for maths/science
+  private async format(raw: string): Promise<string> {
+    if (!raw.trim() || !this.settings.formatWithAi) return raw
     try {
-      const res = await requestUrl({
-        url: 'https://api.openai.com/v1/chat/completions',
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.settings.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.settings.chatModel || 'gpt-4o-mini',
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: FORMAT_PROMPT },
-            { role: 'user', content: raw },
-          ],
-        }),
-        throw: false,
-      })
-      if (res.status >= 400) throw new Error(res.json?.error?.message ?? `HTTP ${res.status}`)
-      const out = JSON.parse(res.json.choices[0].message.content)
-      const strip = (t: unknown) => String(t ?? '').replace(/```/g, "'''")
-      return { transcript: strip(out.transcript) || raw, summary: strip(out.summary) }
+      const out = await this.chat(FORMAT_PROMPT, raw)
+      return noFences(out.transcript) || raw
     } catch (err: any) {
-      // Never lose the transcript because the summary step failed
-      new Notice(`Mnemo: summary failed (${err?.message ?? 'error'}) — raw transcript kept.`, 8000)
-      return { transcript: raw, summary: '' }
+      // Never lose the transcript because the tidy step failed
+      new Notice(`Mnemo: formatting failed (${err?.message ?? 'error'}) — raw transcript kept.`, 8000)
+      return raw
     }
   }
 
-  private insert(block: string, audioLink: string) {
-    const text = audioLink ? `${audioLink}\n${block}` : block
+  // Only runs when the user presses "Generate summary"
+  private async summarise(transcript: string): Promise<string> {
+    const summary = noFences(await this.chat(SUMMARY_PROMPT, transcript).then(o => o.summary)).trim()
+    if (!summary) throw new Error('empty summary')
+    return summary
+  }
+
+  private insert(text: string) {
 
     const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor
     if (editor) {
@@ -493,7 +768,9 @@ export default class MnemoPlugin extends Plugin {
 
 class LabelModal extends Modal {
   private resolve: (v: string | null) => void = () => {}
-  private value = ''
+  constructor(app: App, private value = '') {
+    super(app)
+  }
 
   ask(): Promise<string | null> {
     return new Promise(resolve => {
@@ -505,7 +782,7 @@ class LabelModal extends Modal {
   onOpen() {
     this.titleEl.setText('Label this recording')
     new Setting(this.contentEl).setName('Label').addText(t => {
-      t.setPlaceholder('e.g. Lecture — Thermodynamics week 3').onChange(v => (this.value = v))
+      t.setPlaceholder('e.g. Lecture — Thermodynamics week 3').setValue(this.value).onChange(v => (this.value = v))
       t.inputEl.addEventListener('keydown', e => {
         if (e.key === 'Enter') {
           e.preventDefault()
@@ -573,8 +850,8 @@ class MnemoSettingTab extends PluginSettingTab {
       )
 
     new Setting(containerEl)
-      .setName('AI formatting & summary')
-      .setDesc('Tidies the transcript, writes maths/science as LaTeX, and fills the Summary tab.')
+      .setName('AI formatting')
+      .setDesc('Tidies the transcript and writes maths/science as LaTeX. Summaries are only made when you press "Generate summary".')
       .addToggle(t =>
         t.setValue(s.formatWithAi).onChange(async v => {
           s.formatWithAi = v
@@ -621,6 +898,16 @@ class MnemoSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: 'Audio files' })
 
     new Setting(containerEl)
+      .setName('Transcribe dropped audio')
+      .setDesc('Drag an audio file (e.g. from Voice Memos or Finder) onto a note to transcribe it there. Turn off to embed dropped audio normally.')
+      .addToggle(t =>
+        t.setValue(s.transcribeDrops).onChange(async v => {
+          s.transcribeDrops = v
+          await save()
+        }),
+      )
+
+    new Setting(containerEl)
       .setName('Save audio to vault')
       .setDesc('Keep the recording and embed it with the transcript.')
       .addToggle(t =>
@@ -649,4 +936,8 @@ class MnemoSettingTab extends PluginSettingTab {
         }),
       )
   }
+}
+
+function fileSource(f: File): AudioSource {
+  return { name: f.name, type: f.type, load: () => f.arrayBuffer() }
 }

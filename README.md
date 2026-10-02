@@ -1,10 +1,13 @@
 # Mnemo — Voice Transcriber for Obsidian
 
-Record your voice (or a lesson, lecture, meeting) inside Obsidian and get a clean transcript **and** an AI summary dropped straight into your note — like Notion's AI transcription, but in your own vault.
+Record your voice (or a lesson, lecture, meeting) inside Obsidian and get a clean transcript dropped straight into your note, with an AI summary on demand — like Notion's AI transcription, but in your own vault.
 
 - **One-click recording** from the ribbon, command palette or a hotkey
 - **Live mode** — text appears in your note while you speak
-- **Tabbed result block** — *Transcript* and *Summary* tabs with a copy button
+- **Drag & drop audio** — drop a recording (Voice Memos, Finder, any audio file) onto a note to transcribe it
+- **Tabbed result block** — *Transcript*, *Audio* and *Summary* tabs with a copy button
+- **Summaries only when you ask** — press *Generate summary* so you never pay for one you don't want
+- **Any length** — long files are split automatically to fit OpenAI's 25 MB limit
 - **Maths & science notation** — spoken formulas become LaTeX (e.g. "x squared plus two x" → $x^2 + 2x$)
 - **Mixed languages** — handles speakers who switch languages mid-sentence (e.g. English ↔ isiZulu) without translating
 - **Saves & labels audio** — recordings are stored in your vault with a name you choose
@@ -82,7 +85,17 @@ The first time you record, your OS will ask for microphone permission for Obsidi
 1. Put your cursor in a note where the transcript should go.
 2. Click the **microphone icon** in the left ribbon. It pulses red and a timer appears in the status bar.
 3. Click it again to stop. Enter a label for the recording (e.g. *Physics — Newton's laws*).
-4. A block appears with the audio player above it and **Transcript / Summary** tabs.
+4. A block appears with **Transcript / Audio / Summary** tabs.
+5. Want a summary? Open the *Summary* tab and press **Generate summary**. It's saved into the note.
+
+### Transcribing existing audio
+
+- **Drag and drop** one or more audio files onto a note. A *Transcribing…* block appears where you dropped them and fills in when done. The audio is copied into your audio folder.
+- **From Voice Memos:** drag the memo onto the note. If nothing happens, drag it to the Desktop first and then onto the note, or use the command below.
+- **Command:** *Mnemo: Transcribe audio file…* opens a file picker.
+- **Already in your vault:** right-click the audio file → *Transcribe with Mnemo*.
+
+Supported: m4a, mp3, wav, webm, ogg, flac, mp4, aac and anything else Obsidian can play. Files over 25 MB are split into 10-minute pieces automatically.
 
 ### Commands (<kbd>⌘/Ctrl</kbd> + <kbd>P</kbd>)
 
@@ -90,12 +103,13 @@ The first time you record, your OS will ask for microphone permission for Obsidi
 | --- | --- |
 | **Mnemo: Start / stop voice transcription** | Records, then transcribes when you stop (uses live mode if *Live mode by default* is on) |
 | **Mnemo: Start / stop live transcription** | Text appears every few seconds while you speak |
+| **Mnemo: Transcribe audio file…** | Pick audio files to transcribe into the current note |
 
 Assign hotkeys under **Settings → Hotkeys** (search "Mnemo"). If you use the *Editing Toolbar* plugin you can add these commands as toolbar buttons.
 
 ### Normal vs live mode
 
-- **Normal** transcribes the whole recording at once — most accurate. Limited to 25 MB per recording (roughly 2+ hours).
+- **Normal** transcribes the whole recording at once — most accurate. Long recordings are split automatically.
 - **Live** transcribes in short chunks — you see text as you go, no length limit, and each chunk detects its language separately (best for lessons that switch languages). Words can occasionally split at chunk boundaries.
 
 ### The result block
@@ -103,8 +117,9 @@ Assign hotkeys under **Settings → Hotkeys** (search "Mnemo"). If you use the *
 Mnemo stores everything as plain text in your note, so it's searchable and future-proof:
 
 ````markdown
-![[x/Recordings/2026-10-01 1530 Physics — Newton's laws.webm]]
 ```mnemo
+--- audio
+x/Recordings/2026-10-01 1530 Physics — Newton's laws.webm
 --- transcript
 Today we look at Newton's second law, $F = ma$ …
 --- summary
@@ -113,7 +128,7 @@ Today we look at Newton's second law, $F = ma$ …
 ```
 ````
 
-Obsidian renders it as a tabbed box. Switch to Source mode to edit the text directly.
+Obsidian renders it as a tabbed box. Blocks from older versions (audio embedded above the block) still work. Switch to Source mode to edit the text directly.
 
 ---
 
@@ -124,11 +139,12 @@ Obsidian renders it as a tabbed box. Switch to Source mode to edit the text dire
 | OpenAI API key | — | Required. Stored locally in `.obsidian/plugins/mnemo/data.json`. |
 | Language | *(blank)* | ISO code like `en` or `zu`. Blank = auto-detect (recommended for mixed-language speech). |
 | Transcription model | `gpt-4o-transcribe` | Best for mixed languages. `gpt-4o-mini-transcribe` is cheaper; `whisper-1` also available. |
-| AI formatting & summary | On | Cleans the transcript, converts maths/science to LaTeX, writes the summary. |
-| Summary model | `gpt-4o-mini` | Any OpenAI chat model. Use a stronger one for heavy maths. |
+| AI formatting | On | Cleans the transcript and converts maths/science to LaTeX. |
+| Summary model | `gpt-4o-mini` | OpenAI chat model for formatting and *Generate summary*. Use a stronger one for heavy maths. |
 | Live mode by default | Off | Makes the ribbon button use live mode. |
 | Live chunk length | 10 s | 3–30 s. Shorter = faster text, slightly less accurate. |
-| Save audio to vault | On | Keeps the recording and embeds it above the transcript. |
+| Transcribe dropped audio | On | Dropping audio on a note transcribes it. Off = normal Obsidian embed. |
+| Save audio to vault | On | Keeps the recording; shown in the *Audio* tab. |
 | Ask for a label | On | Files are named `YYYY-MM-DD HHmm <label>`. |
 | Audio folder | `x/Recordings` | Any folder in your vault; created automatically. |
 
@@ -136,7 +152,7 @@ Obsidian renders it as a tabbed box. Switch to Source mode to edit the text dire
 
 ## Costs
 
-You pay OpenAI directly for what you use. Roughly: transcription costs a fraction of a US cent per minute of audio, and the summary step is usually under a cent per recording with `gpt-4o-mini`. Check [OpenAI pricing](https://openai.com/api/pricing) for current rates.
+You pay OpenAI directly for what you use. Roughly: transcription costs a fraction of a US cent per minute of audio, and formatting or a summary is usually under a cent each with `gpt-4o-mini`. Check [OpenAI pricing](https://openai.com/api/pricing) for current rates.
 
 ## Privacy & security
 
@@ -151,7 +167,8 @@ You pay OpenAI directly for what you use. Roughly: transcription costs a fractio
 | "Microphone access denied" | macOS: *System Settings → Privacy & Security → Microphone* → enable Obsidian. Windows: *Settings → Privacy → Microphone*. |
 | "Invalid OpenAI API key" | Re-paste the key; make sure billing is set up on your OpenAI account. |
 | Settings look out of date after updating | Run *Reload app without saving* from the command palette or restart Obsidian. |
-| Summary tab empty | The summary step failed (wrong model name or quota) — the raw transcript is kept. Check the model name in settings. |
+| *Generate summary* fails | Check the *Summary model* name in settings and your OpenAI quota. |
+| Dropping a file just embeds it | Turn on *Transcribe dropped audio* in settings. From Voice Memos, drag the memo to the Desktop first. |
 | Wrong language / translated text | Leave *Language* blank, use `gpt-4o-transcribe`, and try live mode. |
 
 ## Development

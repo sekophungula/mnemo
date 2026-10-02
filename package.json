@@ -1,6 +1,6 @@
 {
   "name": "mnemo",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Record voice in Obsidian and transcribe it with OpenAI Whisper.",
   "main": "main.js",
   "private": true,
